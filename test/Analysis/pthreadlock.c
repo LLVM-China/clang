@@ -176,6 +176,13 @@ ok22(void) {
   pthread_mutex_unlock(pmtx);  // no-warning
 }
 
+void 
+ok23(void) {
+  if (pthread_mutex_destroy(pmtx) != 0) {
+    pthread_mutex_unlock(pmtx); // no-warning
+    pthread_mutex_destroy(pmtx);
+  }
+}
 
 void
 bad1(void)
