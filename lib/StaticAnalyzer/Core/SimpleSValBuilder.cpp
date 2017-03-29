@@ -969,8 +969,10 @@ SVal SimpleSValBuilder::evalBinOpLN(ProgramStateRef state,
     }
 
     if (Optional<NonLoc> indexV = index.getAs<NonLoc>()) {
-      return loc::MemRegionVal(MemMgr.getElementRegion(elementType, *indexV,
-                                                       superR, getContext()));
+      if (!elementType.isNull()) {
+        return loc::MemRegionVal(MemMgr.getElementRegion(elementType, *indexV,
+                                                         superR, getContext()));
+      }
     }
   }
   return UnknownVal();
