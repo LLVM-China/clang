@@ -556,9 +556,9 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
                       "\"" CLANG_VERSION_STRING " "
                       + getClangFullRepositoryVersion() + "\"");
   if (!LangOpts.MSVCCompat) {
-    // Currently claim to be compatible with GCC 4.2.1-5621, but only if we're
+    // Currently claim to be compatible with GCC 4.7.1-5621, but only if we're
     // not compiling for MSVC compatibility
-    Builder.defineMacro("__GNUC_MINOR__", "2");
+    Builder.defineMacro("__GNUC_MINOR__", "7");
     Builder.defineMacro("__GNUC_PATCHLEVEL__", "1");
     Builder.defineMacro("__GNUC__", "4");
     Builder.defineMacro("__GXX_ABI_VERSION", "1002");
@@ -576,9 +576,9 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
   Builder.defineMacro("__PRAGMA_REDEFINE_EXTNAME", "1");
 
   // As sad as it is, enough software depends on the __VERSION__ for version
-  // checks that it is necessary to report 4.2.1 (the base GCC version we claim
+  // checks that it is necessary to report 4.7.1 (the base GCC version we claim
   // compatibility with) first.
-  Builder.defineMacro("__VERSION__", "\"4.2.1 Compatible " + 
+  Builder.defineMacro("__VERSION__", "\"4.7.1 Compatible " + 
                       Twine(getClangFullCPPVersion()) + "\"");
 
   // Initialize language-specific preprocessor defines.
