@@ -159,12 +159,6 @@ CodeGenModule::CodeGenModule(ASTContext &C, const HeaderSearchOptions &HSO,
   // CoverageMappingModuleGen object.
   if (CodeGenOpts.CoverageMapping)
     CoverageMapping.reset(new CoverageMappingModuleGen(*this, *CoverageInfo));
-
-  // Record mregparm value now so it is visible through rest of codegen.
-  if (Context.getTargetInfo().getTriple().getArch() == llvm::Triple::x86)
-    getModule().addModuleFlag(llvm::Module::Error, "NumRegisterParameters",
-                              CodeGenOpts.NumRegisterParameters);
-
 }
 
 CodeGenModule::~CodeGenModule() {}
@@ -412,8 +406,10 @@ void CodeGenModule::Release() {
   EmitDeferredUnusedCoverageMappings();
   if (CoverageMapping)
     CoverageMapping->emit();
-  if (CodeGenOpts.SanitizeCfiCrossDso)
+  if (CodeGenOpts.SanitizeCfiCrossDso) {
     CodeGenFunction(*this).EmitCfiCheckFail();
+    CodeGenFunction(*this).EmitCfiCheckStub();
+  }
   emitAtAvailableLinkGuard();
   emitLLVMUsed();
   if (SanStats)
@@ -424,6 +420,11 @@ void CodeGenModule::Release() {
     EmitModuleLinkOptions();
   }
 
+  // Record mregparm value now so it is visible through rest of codegen.
+  if (Context.getTargetInfo().getTriple().getArch() == llvm::Triple::x86)
+    getModule().addModuleFlag(llvm::Module::Error, "NumRegisterParameters",
+                              CodeGenOpts.NumRegisterParameters);
+  
   if (CodeGenOpts.DwarfVersion) {
     // We actually want the latest version when there are conflicts.
     // We can change from Warning to Latest if such mode is supported.
@@ -2934,13 +2935,8 @@ static void replaceUsesOfNonProtoConstant(llvm::Constant *old,
       continue;
 
     // Get the call site's attribute list.
-    SmallVector<llvm::AttributeList, 8> newAttrs;
+    SmallVector<llvm::AttributeSet, 8> newArgAttrs;
     llvm::AttributeList oldAttrs = callSite.getAttributes();
-
-    // Collect any return attributes from the call.
-    if (oldAttrs.hasAttributes(llvm::AttributeList::ReturnIndex))
-      newAttrs.push_back(llvm::AttributeList::get(newFn->getContext(),
-                                                  oldAttrs.getRetAttributes()));
 
     // If the function was passed too few arguments, don't transform.
     unsigned newNumArgs = newFn->arg_size();
@@ -2950,24 +2946,18 @@ static void replaceUsesOfNonProtoConstant(llvm::Constant *old,
     // If any of the types mismatch, we don't transform.
     unsigned argNo = 0;
     bool dontTransform = false;
-    for (llvm::Function::arg_iterator ai = newFn->arg_begin(),
-           ae = newFn->arg_end(); ai != ae; ++ai, ++argNo) {
-      if (callSite.getArgument(argNo)->getType() != ai->getType()) {
+    for (llvm::Argument &A : newFn->args()) {
+      if (callSite.getArgument(argNo)->getType() != A.getType()) {
         dontTransform = true;
         break;
       }
 
       // Add any parameter attributes.
-      if (oldAttrs.hasAttributes(argNo + 1))
-        newAttrs.push_back(llvm::AttributeList::get(
-            newFn->getContext(), oldAttrs.getParamAttributes(argNo + 1)));
+      newArgAttrs.push_back(oldAttrs.getParamAttributes(argNo));
+      argNo++;
     }
     if (dontTransform)
       continue;
-
-    if (oldAttrs.hasAttributes(llvm::AttributeList::FunctionIndex))
-      newAttrs.push_back(llvm::AttributeList::get(newFn->getContext(),
-                                                  oldAttrs.getFnAttributes()));
 
     // Okay, we can transform this.  Create the new call instruction and copy
     // over the required information.
@@ -2992,8 +2982,9 @@ static void replaceUsesOfNonProtoConstant(llvm::Constant *old,
 
     if (!newCall->getType()->isVoidTy())
       newCall->takeName(callSite.getInstruction());
-    newCall.setAttributes(
-        llvm::AttributeList::get(newFn->getContext(), newAttrs));
+    newCall.setAttributes(llvm::AttributeList::get(
+        newFn->getContext(), oldAttrs.getFnAttributes(),
+        oldAttrs.getRetAttributes(), newArgAttrs));
     newCall.setCallingConv(callSite.getCallingConv());
 
     // Finally, remove the old call, replacing any uses with the new one.
@@ -3825,6 +3816,11 @@ void CodeGenModule::EmitTopLevelDecl(Decl *D) {
     EmitDeclContext(cast<NamespaceDecl>(D));
     break;
   case Decl::CXXRecord:
+    if (DebugInfo) {
+      if (auto *ES = D->getASTContext().getExternalSource())
+        if (ES->hasExternalDefinitions(D) == ExternalASTSource::EK_Never)
+          DebugInfo->completeUnusedClass(cast<CXXRecordDecl>(*D));
+    }
     // Emit any static data members, they may be definitions.
     for (auto *I : cast<CXXRecordDecl>(D)->decls())
       if (isa<VarDecl>(I) || isa<CXXRecordDecl>(I))

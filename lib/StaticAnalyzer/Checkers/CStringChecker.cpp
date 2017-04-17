@@ -120,6 +120,7 @@ public:
   void evalStdCopy(CheckerContext &C, const CallExpr *CE) const;
   void evalStdCopyBackward(CheckerContext &C, const CallExpr *CE) const;
   void evalStdCopyCommon(CheckerContext &C, const CallExpr *CE) const;
+  void evalMemset(CheckerContext &C, const CallExpr *CE) const;
 
   // Utility methods
   std::pair<ProgramStateRef , ProgramStateRef >
@@ -1999,6 +2000,80 @@ void CStringChecker::evalStdCopyCommon(CheckerContext &C,
   C.addTransition(State);
 }
 
+void CStringChecker::evalMemset(CheckerContext &C, const CallExpr *CE) const {
+  if (CE->getNumArgs() != 3)
+    return;
+
+  CurrentFunctionDescription = "memory set function";
+
+  const Expr *Mem = CE->getArg(0);
+  const Expr *Const = CE->getArg(1);
+  const Expr *Size = CE->getArg(2);
+  ProgramStateRef State = C.getState();
+
+  // See if the size argument is zero.
+  const LocationContext *LCtx = C.getLocationContext();
+  SVal SizeVal = State->getSVal(Size, LCtx);
+  QualType SizeTy = Size->getType();
+
+  ProgramStateRef StateZeroSize, StateNonZeroSize;
+  std::tie(StateZeroSize, StateNonZeroSize) =
+    assumeZero(C, State, SizeVal, SizeTy);
+
+  // Get the value of the memory area.
+  SVal MemVal = State->getSVal(Mem, LCtx);
+
+  // If the size is zero, there won't be any actual memory access, so
+  // just bind the return value to the Mem buffer and return.
+  if (StateZeroSize && !StateNonZeroSize) {
+    StateZeroSize = StateZeroSize->BindExpr(CE, LCtx, MemVal);
+    C.addTransition(StateZeroSize);
+    return;
+  }
+
+  if (!StateNonZeroSize)
+    return;
+
+  // If the size can be nonzero, we have to check the other arguments.
+  if (StateNonZeroSize) {
+    State = StateNonZeroSize;
+
+    // Ensure the memory area is not null.
+    // If it is NULL there will be a NULL pointer dereference.
+    State = checkNonNull(C, State, Mem, MemVal);
+    if (!State)
+      return;
+
+    SValBuilder &SB = C.getSValBuilder();
+    // Check the region's extent is equal to the Size parameter.
+    SVal RetVal = SB.conjureSymbolVal(nullptr, CE, LCtx, C.blockCount());
+    const SymbolicRegion *R =
+        dyn_cast_or_null<SymbolicRegion>(RetVal.getAsRegion());
+    if (!R)
+      return;
+    if (Optional<DefinedOrUnknownSVal> DefinedSize =
+            SizeVal.getAs<DefinedOrUnknownSVal>()) {
+      DefinedOrUnknownSVal Extent = R->getExtent(SB);
+      ProgramStateRef StateSameSize, StateNotSameSize;
+      std::tie(StateSameSize, StateNotSameSize) =
+          State->assume(SB.evalEQ(State, Extent, *DefinedSize));
+      if (StateNotSameSize) {
+        State = CheckBufferAccess(C, State, Size, Mem);
+        if (!State)
+        return;
+      }
+
+      if (StateSameSize) {
+        SVal ConstVal = State->getSVal(Const, LCtx);
+        State = State->BindExpr(CE, LCtx, RetVal);
+        // Actually bind the second argument value to the buffer.
+        State = State->bindDefault(RetVal, ConstVal, LCtx);
+        C.addTransition(State);
+      }
+    }
+  }
+}
+
 static bool isCPPStdLibraryFunction(const FunctionDecl *FD, StringRef Name) {
   IdentifierInfo *II = FD->getIdentifier();
   if (!II)
@@ -2032,6 +2107,8 @@ bool CStringChecker::evalCall(const CallExpr *CE, CheckerContext &C) const {
     evalFunction =  &CStringChecker::evalMemcmp;
   else if (C.isCLibraryFunction(FDecl, "memmove"))
     evalFunction =  &CStringChecker::evalMemmove;
+  else if (C.isCLibraryFunction(FDecl, "memset"))
+    evalFunction =  &CStringChecker::evalMemset;
   else if (C.isCLibraryFunction(FDecl, "strcpy"))
     evalFunction =  &CStringChecker::evalStrcpy;
   else if (C.isCLibraryFunction(FDecl, "strncpy"))
