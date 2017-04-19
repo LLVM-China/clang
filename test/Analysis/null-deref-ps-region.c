@@ -19,6 +19,18 @@ void f14(int *a) {
   }
 }
 
+void foo() {
+  int *x = malloc(sizeof(int));
+  memset(x, 0, sizeof(int));
+  1 / *x; // expected-warning{{Division by zero}}
+}
+
+void bar() {
+  int *x = malloc(sizeof(int));
+  memset(x, 0, 1);
+  1 / *x; // no-warning
+}
+
 void f531() {
   int *x = 0;
   memset(x, 0, 1); // expected-warning {{Null pointer argument in call to memory set function}}

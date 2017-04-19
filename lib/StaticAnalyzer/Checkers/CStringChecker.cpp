@@ -2034,42 +2034,41 @@ void CStringChecker::evalMemset(CheckerContext &C, const CallExpr *CE) const {
   if (!StateNonZeroSize)
     return;
 
-  // If the size can be nonzero, we have to check the other arguments.
-  if (StateNonZeroSize) {
-    State = StateNonZeroSize;
+  // Ensure the memory area is not null.
+  // If it is NULL there will be a NULL pointer dereference.
+  State = checkNonNull(C, StateNonZeroSize, Mem, MemVal);
+  if (!State)
+    return;
 
-    // Ensure the memory area is not null.
-    // If it is NULL there will be a NULL pointer dereference.
-    State = checkNonNull(C, State, Mem, MemVal);
-    if (!State)
-      return;
-
-    SValBuilder &SB = C.getSValBuilder();
-    // Check the region's extent is equal to the Size parameter.
-    SVal RetVal = SB.conjureSymbolVal(nullptr, CE, LCtx, C.blockCount());
-    const SymbolicRegion *R =
-        dyn_cast_or_null<SymbolicRegion>(RetVal.getAsRegion());
-    if (!R)
-      return;
-    if (Optional<DefinedOrUnknownSVal> DefinedSize =
-            SizeVal.getAs<DefinedOrUnknownSVal>()) {
-      DefinedOrUnknownSVal Extent = R->getExtent(SB);
-      ProgramStateRef StateSameSize, StateNotSameSize;
-      std::tie(StateSameSize, StateNotSameSize) =
-          State->assume(SB.evalEQ(State, Extent, *DefinedSize));
-      if (StateNotSameSize) {
-        State = CheckBufferAccess(C, State, Size, Mem);
-        if (!State)
+  SValBuilder &SB = C.getSValBuilder();
+  // Check the region's extent is equal to the Size parameter.
+  SVal RetVal = SB.conjureSymbolVal(nullptr, CE, LCtx, C.blockCount());
+  const SymbolicRegion *R =
+      dyn_cast_or_null<SymbolicRegion>(RetVal.getAsRegion());
+  if (!R)
+    return;
+  if (Optional<DefinedOrUnknownSVal> DefinedSize =
+          SizeVal.getAs<DefinedOrUnknownSVal>()) {
+    DefinedOrUnknownSVal Extent = R->getExtent(SB);
+    ProgramStateRef StateSameSize, StateNotSameSize;
+    std::tie(StateSameSize, StateNotSameSize) =
+        State->assume(SB.evalEQ(State, Extent, *DefinedSize));
+    if (StateNotSameSize) {
+      State = CheckBufferAccess(C, State, Size, Mem);
+      if (!State)
         return;
-      }
+      State = InvalidateBuffer(C, State, Mem, C.getSVal(Mem),
+                               /*IsSourceBuffer*/false, Size);
+      if (!State)
+        return;
+    }
 
-      if (StateSameSize) {
-        SVal ConstVal = State->getSVal(Const, LCtx);
-        State = State->BindExpr(CE, LCtx, RetVal);
-        // Actually bind the second argument value to the buffer.
-        State = State->bindDefault(RetVal, ConstVal, LCtx);
-        C.addTransition(State);
-      }
+    if (StateSameSize) {
+      SVal ConstVal = State->getSVal(Const, LCtx);
+      State = State->BindExpr(CE, LCtx, RetVal);
+      // Actually bind the second argument value to the buffer.
+      State = State->bindDefault(RetVal, ConstVal, LCtx);
+      C.addTransition(State);
     }
   }
 }
