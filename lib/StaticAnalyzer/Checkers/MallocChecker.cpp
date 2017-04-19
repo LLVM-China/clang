@@ -331,8 +331,8 @@ private:
                                 bool FreesMemOnFailure,
                                 ProgramStateRef State, 
                                 bool SuffixWithN = false) const;
-  static SVal SValBinMulOp(CheckerContext &C, const Expr *Blocks, 
-                    const Expr *BlockBytes, ProgramStateRef State);
+  static SVal SValBinMulOp(CheckerContext &C, const Expr *Blocks,
+                           const Expr *BlockBytes, ProgramStateRef State);
   static ProgramStateRef CallocMem(CheckerContext &C, const CallExpr *CE,
                                    ProgramStateRef State);
 
@@ -581,6 +581,7 @@ void MallocChecker::initIdentifierInfo(ASTContext &Ctx) const {
   II_g_malloc_n = &Ctx.Idents.get("g_malloc_n");
   II_g_malloc0_n = &Ctx.Idents.get("g_malloc0_n");
   II_g_realloc_n = &Ctx.Idents.get("g_realloc_n");
+  II_g_try_malloc_n = &Ctx.Idents.get("g_try_malloc_n");
   II_g_try_malloc0_n = &Ctx.Idents.get("g_try_malloc0_n");
   II_g_try_realloc_n = &Ctx.Idents.get("g_try_realloc_n");
 }
@@ -784,18 +785,11 @@ llvm::Optional<ProgramStateRef> MallocChecker::performKernelMalloc(
   return None;
 }
 
-SVal MallocChecker::SValBinMulOp(CheckerContext &C, 
-                                 const Expr *Blocks, 
-                                 const Expr *BlockBytes, 
-                                 ProgramStateRef State) {
+SVal MallocChecker::SValBinMulOp(CheckerContext &C, const Expr *Blocks,
+                                 const Expr *BlockBytes, ProgramStateRef State) {
   SValBuilder &svalBuilder = C.getSValBuilder();
-  const LocationContext *LCtx = C.getLocationContext();
-  if (!LCtx)
-    return UndefinedVal();
-  SVal nBlocks = State->getSVal(Blocks, LCtx);
-  SVal nBlockBytes = State->getSVal(BlockBytes, LCtx);
-  if (!nBlocks.isValid() || !nBlockBytes.isValid())
-    return UndefinedVal();
+  SVal nBlocks = C.getSVal(Blocks);
+  SVal nBlockBytes = C.getSVal(BlockBytes);
   SVal TotalSize = svalBuilder.evalBinOp(State, BO_Mul, nBlocks, nBlockBytes, 
                                          svalBuilder.getContext().getSizeType());
   return TotalSize;
@@ -2038,10 +2032,10 @@ ProgramStateRef MallocChecker::ReallocMemAux(CheckerContext &C,
   if (!State)
     return nullptr;
 
-  if ((!SuffixWithN && CE->getNumArgs() < 2) || 
-      (SuffixWithN && CE->getNumArgs() < 3)) {
+  if (SuffixWithN && CE->getNumArgs() < 3)
     return nullptr;
-  }
+  else if (CE->getNumArgs() < 2)
+    return nullptr;
 
   const Expr *arg0Expr = CE->getArg(0);
   const LocationContext *LCtx = C.getLocationContext();
@@ -2057,26 +2051,23 @@ ProgramStateRef MallocChecker::ReallocMemAux(CheckerContext &C,
 
   // Get the size argument. If there is no size arg then give up.
   const Expr *Arg1 = CE->getArg(1);
-  const Expr *Arg2 = SuffixWithN ? CE->getArg(2) : CE->getArg(1);
-  if ((!SuffixWithN && !Arg1) || (SuffixWithN && !Arg2))
+  if (!Arg1)
     return nullptr;
 
   // Get the value of the size argument.
-  SVal Arg1ValG = State->getSVal(Arg1, LCtx);
-  SVal Arg2ValG = State->getSVal(Arg2, LCtx);
-  if (!Arg1ValG.getAs<DefinedOrUnknownSVal>() || 
-      (SuffixWithN && !Arg2ValG.getAs<DefinedOrUnknownSVal>())) {
-    return nullptr;
-  }
-  SVal TotalSizeG = SValBinMulOp(C, Arg1, Arg2, State);
-  DefinedOrUnknownSVal Arg1Val = SuffixWithN ? 
-      TotalSizeG.castAs<DefinedOrUnknownSVal>() : 
-      Arg1ValG.castAs<DefinedOrUnknownSVal>();
+  SVal TotalSize = State->getSVal(Arg1, LCtx);
+  if (SuffixWithN) {
+    const Expr *Arg2 = CE->getArg(2);
+    if (!Arg2)
+      return nullptr;
 
-  // Compare the size argument to 0.
+    TotalSize = SValBinMulOp(C, Arg1, Arg2, State);
+  }
+  if (!TotalSize.getAs<DefinedOrUnknownSVal>())
+    return nullptr;
   DefinedOrUnknownSVal SizeZero =
-    svalBuilder.evalEQ(State, Arg1Val,
-                       svalBuilder.makeIntValWithPtrWidth(0, false));
+      svalBuilder.evalEQ(State, TotalSize.castAs<DefinedOrUnknownSVal>(),
+                         svalBuilder.makeIntValWithPtrWidth(0, false));
 
   ProgramStateRef StatePtrIsNull, StatePtrNotNull;
   std::tie(StatePtrIsNull, StatePtrNotNull) = State->assume(PtrEQ);
@@ -2089,11 +2080,8 @@ ProgramStateRef MallocChecker::ReallocMemAux(CheckerContext &C,
 
   // If the ptr is NULL and the size is not 0, the call is equivalent to
   // malloc(size).
-  if ( PrtIsNull && !SizeIsZero) {
-    ProgramStateRef stateMalloc = SuffixWithN ? 
-                                  MallocMemAux(C, CE, TotalSizeG, 
-                                               UndefinedVal(), StatePtrIsNull) : 
-                                  MallocMemAux(C, CE, CE->getArg(1),
+  if (PrtIsNull && !SizeIsZero) {
+    ProgramStateRef stateMalloc = MallocMemAux(C, CE, TotalSize,
                                                UndefinedVal(), StatePtrIsNull);
     return stateMalloc;
   }
@@ -2126,10 +2114,7 @@ ProgramStateRef MallocChecker::ReallocMemAux(CheckerContext &C,
   if (ProgramStateRef stateFree =
         FreeMemAux(C, CE, State, 0, false, ReleasedAllocated)) {
 
-    ProgramStateRef stateRealloc = SuffixWithN ? 
-                                   MallocMemAux(C, CE, TotalSizeG, 
-                                                UnknownVal(), stateFree) : 
-                                   MallocMemAux(C, CE, CE->getArg(1),
+    ProgramStateRef stateRealloc = MallocMemAux(C, CE, TotalSize,
                                                 UnknownVal(), stateFree);
     if (!stateRealloc)
       return nullptr;
