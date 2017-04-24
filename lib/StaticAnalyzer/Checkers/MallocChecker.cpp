@@ -331,8 +331,8 @@ private:
                                 bool FreesMemOnFailure,
                                 ProgramStateRef State, 
                                 bool SuffixWithN = false) const;
-  static SVal SValBinMulOp(CheckerContext &C, const Expr *Blocks,
-                           const Expr *BlockBytes, ProgramStateRef State);
+  static SVal evalMulForBufferSize(CheckerContext &C, const Expr *Blocks,
+                                   const Expr *BlockBytes);
   static ProgramStateRef CallocMem(CheckerContext &C, const CallExpr *CE,
                                    ProgramStateRef State);
 
@@ -785,13 +785,14 @@ llvm::Optional<ProgramStateRef> MallocChecker::performKernelMalloc(
   return None;
 }
 
-SVal MallocChecker::SValBinMulOp(CheckerContext &C, const Expr *Blocks,
-                                 const Expr *BlockBytes, ProgramStateRef State) {
-  SValBuilder &svalBuilder = C.getSValBuilder();
-  SVal nBlocks = C.getSVal(Blocks);
-  SVal nBlockBytes = C.getSVal(BlockBytes);
-  SVal TotalSize = svalBuilder.evalBinOp(State, BO_Mul, nBlocks, nBlockBytes, 
-                                         svalBuilder.getContext().getSizeType());
+SVal MallocChecker::evalMulForBufferSize(CheckerContext &C, const Expr *Blocks,
+                                         const Expr *BlockBytes) {
+  SValBuilder &SB = C.getSValBuilder();
+  SVal BlocksVal = C.getSVal(Blocks);
+  SVal BlockBytesVal = C.getSVal(BlockBytes);
+  ProgramStateRef State = C.getState();
+  SVal TotalSize = SB.evalBinOp(State, BO_Mul, BlocksVal, BlockBytesVal,
+                                SB.getContext().getSizeType());
   return TotalSize;
 }
 
@@ -908,12 +909,11 @@ void MallocChecker::checkPostStmt(const CallExpr *CE, CheckerContext &C) const {
         return;
       SVal Init = UndefinedVal();
       if (FunI == II_g_malloc0_n || FunI == II_g_try_malloc0_n) {
-        SValBuilder &svalBuilder = C.getSValBuilder();
-        Init = svalBuilder.makeZeroVal(svalBuilder.getContext().CharTy);
+        SValBuilder &SB = C.getSValBuilder();
+        Init = SB.makeZeroVal(SB.getContext().CharTy);
       }
-      State = MallocMemAux(C, CE, 
-                           SValBinMulOp(C, CE->getArg(0), CE->getArg(1), State),
-                           Init, State);
+      SVal TotalSize = evalMulForBufferSize(C, CE->getArg(0), CE->getArg(1));
+      State = MallocMemAux(C, CE, TotalSize, Init, State);
       State = ProcessZeroAllocation(C, CE, 0, State);
       State = ProcessZeroAllocation(C, CE, 1, State);
     } else if (FunI == II_g_realloc_n || FunI == II_g_try_realloc_n) {
@@ -2049,25 +2049,20 @@ ProgramStateRef MallocChecker::ReallocMemAux(CheckerContext &C,
   DefinedOrUnknownSVal PtrEQ =
     svalBuilder.evalEQ(State, arg0Val, svalBuilder.makeNull());
 
-  // Get the size argument. If there is no size arg then give up.
+  // Get the size argument.
   const Expr *Arg1 = CE->getArg(1);
-  if (!Arg1)
-    return nullptr;
 
   // Get the value of the size argument.
   SVal TotalSize = State->getSVal(Arg1, LCtx);
-  if (SuffixWithN) {
-    const Expr *Arg2 = CE->getArg(2);
-    if (!Arg2)
-      return nullptr;
-
-    TotalSize = SValBinMulOp(C, Arg1, Arg2, State);
-  }
+  if (SuffixWithN)
+    TotalSize = evalMulForBufferSize(C, Arg1, CE->getArg(2));
   if (!TotalSize.getAs<DefinedOrUnknownSVal>())
     return nullptr;
+
+  // Compare the size argument to 0.
   DefinedOrUnknownSVal SizeZero =
-      svalBuilder.evalEQ(State, TotalSize.castAs<DefinedOrUnknownSVal>(),
-                         svalBuilder.makeIntValWithPtrWidth(0, false));
+    svalBuilder.evalEQ(State, TotalSize.castAs<DefinedOrUnknownSVal>(),
+                       svalBuilder.makeIntValWithPtrWidth(0, false));
 
   ProgramStateRef StatePtrIsNull, StatePtrNotNull;
   std::tie(StatePtrIsNull, StatePtrNotNull) = State->assume(PtrEQ);
@@ -2146,10 +2141,9 @@ ProgramStateRef MallocChecker::CallocMem(CheckerContext &C, const CallExpr *CE,
 
   SValBuilder &svalBuilder = C.getSValBuilder();
   SVal zeroVal = svalBuilder.makeZeroVal(svalBuilder.getContext().CharTy);
+  SVal TotalSize = evalMulForBufferSize(C, CE->getArg(0), CE->getArg(1));
 
-  return MallocMemAux(C, CE, 
-                      SValBinMulOp(C, CE->getArg(0), CE->getArg(1), State), 
-                      zeroVal, State);
+  return MallocMemAux(C, CE, TotalSize, zeroVal, State);
 }
 
 LeakInfo

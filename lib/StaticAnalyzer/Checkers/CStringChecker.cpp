@@ -2042,14 +2042,14 @@ void CStringChecker::evalMemset(CheckerContext &C, const CallExpr *CE) const {
 
   SValBuilder &SB = C.getSValBuilder();
   // Check the region's extent is equal to the Size parameter.
-  SVal RetVal = SB.conjureSymbolVal(nullptr, CE, LCtx, C.blockCount());
-  const SymbolicRegion *R =
+  SVal RetVal = SB.getConjuredHeapSymbolVal(CE, LCtx, C.blockCount());
+  const SymbolicRegion *SR =
       dyn_cast_or_null<SymbolicRegion>(RetVal.getAsRegion());
-  if (!R)
+  if (!SR)
     return;
   if (Optional<DefinedOrUnknownSVal> DefinedSize =
           SizeVal.getAs<DefinedOrUnknownSVal>()) {
-    DefinedOrUnknownSVal Extent = R->getExtent(SB);
+    DefinedOrUnknownSVal Extent = SR->getExtent(SB);
     ProgramStateRef StateSameSize, StateNotSameSize;
     std::tie(StateSameSize, StateNotSameSize) =
         State->assume(SB.evalEQ(State, Extent, *DefinedSize));
@@ -2068,6 +2068,15 @@ void CStringChecker::evalMemset(CheckerContext &C, const CallExpr *CE) const {
       State = State->BindExpr(CE, LCtx, RetVal);
       // Actually bind the second argument value to the buffer.
       State = State->bindDefault(RetVal, ConstVal, LCtx);
+      // FIXME: Copy to Mem
+      const MemRegion *MR = RetVal.getAsRegion();
+      if (!MR)
+        return;
+      MR = MR->StripCasts();
+      if (const TypedValueRegion *TVR = MR->getAs<TypedValueRegion>()) {
+        MemVal = SB.makeLazyCompoundVal(StoreRef(State->getStore(),
+                    State->getStateManager().getStoreManager()), TVR);
+      }
       C.addTransition(State);
     }
   }

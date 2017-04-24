@@ -1779,6 +1779,9 @@ bool Generic_GCC::GCCInstallationDetector::getBiarchSibling(Multilib &M) const {
   static const char *const X86_64LibDirs[] = {"/lib64", "/lib"};
   static const char *const X86_64Triples[] = {
       "x86_64-linux-gnu",       "x86_64-unknown-linux-gnu",
+      "x86_64-isoft-linux",     "x86_64-isoft-linux-gnu",
+      "x86_64-everest-linux",   "x86_64-everest-linux-gnu",
+      "x86_64-pure64-linux",    "x86_64-pure64-linux-gnu",
       "x86_64-pc-linux-gnu",    "x86_64-redhat-linux6E",
       "x86_64-redhat-linux",    "x86_64-suse-linux",
       "x86_64-manbo-linux-gnu", "x86_64-linux-gnu",
@@ -1788,6 +1791,9 @@ bool Generic_GCC::GCCInstallationDetector::getBiarchSibling(Multilib &M) const {
   static const char *const X86LibDirs[] = {"/lib32", "/lib"};
   static const char *const X86Triples[] = {
       "i686-linux-gnu",       "i686-pc-linux-gnu",     "i486-linux-gnu",
+      "i686-isoft-linux",     "i686-isoft-linux-gnu",
+      "i686-everest-linux",   "i686-everest-linux-gnu",
+      "i686-pure64-linux",    "i686-pure64-linux-gnu",
       "i386-linux-gnu",       "i386-redhat-linux6E",   "i686-redhat-linux",
       "i586-redhat-linux",    "i386-redhat-linux",     "i586-suse-linux",
       "i486-slackware-linux", "i686-montavista-linux", "i686-linux-android",
